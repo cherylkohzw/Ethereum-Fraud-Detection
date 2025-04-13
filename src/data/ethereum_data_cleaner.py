@@ -99,20 +99,17 @@ class EthereumDataCleaner:
         
         return pd.DataFrame(X_resampled, columns=X.columns), pd.Series(y_resampled, name=y.name)
     
-    def handle_transaction_outliers(self, df: pd.DataFrame, method: str = 'zscore',
-                                threshold: float = 3.0, exclude_cols: List[str] = None) -> pd.DataFrame:
+    def handle_transaction_outliers(self, df: pd.DataFrame, method: str = 'iqr',
+                                threshold: float = 1.5, exclude_cols: List[str] = None) -> pd.DataFrame:
         """
-        Handle outliers in transaction amounts and metrics.
+        Handle outliers in transaction amounts and metrics using a more robust approach.
         
         Args:
             df (pd.DataFrame): Input DataFrame with transaction features
             method (str): Method to handle outliers
+                         'iqr': Remove based on IQR (default)
                          'zscore': Remove based on z-score
-                         'iqr': Remove based on IQR
-                         'log': Log transformation for transaction amounts
-                         'sqrt': Square root transformation
-                         'winsor': Winsorization of extreme values
-            threshold (float): Threshold for outlier detection
+            threshold (float): Threshold for outlier detection (default 1.5 for standard IQR rule)
             exclude_cols (List[str]): Features to exclude from outlier handling
         
         Returns:
@@ -125,51 +122,34 @@ class EthereumDataCleaner:
         numeric_cols = df.select_dtypes(include=['int64', 'float64']).columns
         cols_to_process = [col for col in numeric_cols if col not in exclude_cols]
         
-        if method == 'zscore':
-            for col in cols_to_process:
-                z_scores = np.abs(stats.zscore(df_processed[col]))
-                df_processed = df_processed[z_scores < threshold]
-        
-        elif method == 'iqr':
+        if method == 'iqr':
+            # Process each column independently
             for col in cols_to_process:
                 Q1 = df_processed[col].quantile(0.25)
                 Q3 = df_processed[col].quantile(0.75)
                 IQR = Q3 - Q1
+                lower_bound = Q1 - threshold * IQR
+                upper_bound = Q3 + threshold * IQR
+                
+                # Remove outliers instead of capping
                 df_processed = df_processed[
-                    (df_processed[col] >= Q1 - threshold * IQR) &
-                    (df_processed[col] <= Q3 + threshold * IQR)
+                    (df_processed[col] >= lower_bound) &
+                    (df_processed[col] <= upper_bound)
                 ]
         
-        elif method == 'log':
+        elif method == 'zscore':
+            # Remove outliers based on z-score
             for col in cols_to_process:
-                min_val = df_processed[col].min()
-                if min_val <= 0:
-                    shift = abs(min_val) + 1
-                    df_processed[col] = np.log(df_processed[col] + shift)
-                else:
-                    df_processed[col] = np.log(df_processed[col])
-        
-        elif method == 'sqrt':
-            for col in cols_to_process:
-                min_val = df_processed[col].min()
-                if min_val < 0:
-                    shift = abs(min_val)
-                    df_processed[col] = np.sqrt(df_processed[col] + shift)
-                else:
-                    df_processed[col] = np.sqrt(df_processed[col])
-        
-        elif method == 'winsor':
-            for col in cols_to_process:
-                df_processed[col] = stats.mstats.winsorize(df_processed[col], 
-                                                         limits=[0.05, 0.05])
+                z_scores = np.abs(stats.zscore(df_processed[col]))
+                df_processed = df_processed[z_scores < threshold]
         
         return df_processed
     
     def clean_ethereum_data(self, df: pd.DataFrame, target_col: str = 'fraud_label',
                         imputation_strategy: Dict[str, str] = None,
                         sampling_strategy: float = 1.0,
-                        outlier_method: str = 'zscore',
-                        outlier_threshold: float = 3.0,
+                        outlier_method: str = 'iqr',
+                        outlier_threshold: float = 1.5,
                         exclude_from_outlier: List[str] = None) -> Tuple[pd.DataFrame, pd.Series]:
         """
         Complete Ethereum data cleaning pipeline.
@@ -179,8 +159,8 @@ class EthereumDataCleaner:
             target_col (str): Name of fraud label column
             imputation_strategy (Dict[str, str]): Imputation strategy for blockchain features
             sampling_strategy (float): SMOTE sampling strategy for fraud classes
-            outlier_method (str): Method for handling transaction outliers
-            outlier_threshold (float): Threshold for outlier detection
+            outlier_method (str): Method for handling outliers ('iqr' or 'zscore')
+            outlier_threshold (float): Threshold for outlier detection (1.5 for IQR rule)
             exclude_from_outlier (List[str]): Features to exclude from outlier handling
         
         Returns:
@@ -190,16 +170,22 @@ class EthereumDataCleaner:
         X = df.drop(columns=[target_col])
         y = df[target_col]
         
-        # Handle missing blockchain data
+        # Handle missing blockchain data first
         X = self.handle_missing_blockchain_data(X, imputation_strategy)
         
-        # Handle transaction outliers
-        X = self.handle_transaction_outliers(X, method=outlier_method,
-                                        threshold=outlier_threshold,
-                                        exclude_cols=exclude_from_outlier)
+        # Handle outliers before SMOTE to ensure clean base data
+        X_cleaned = self.handle_transaction_outliers(
+            X, 
+            method=outlier_method,
+            threshold=outlier_threshold,
+            exclude_cols=exclude_from_outlier
+        )
         
-        # Balance fraud classes
-        X_balanced, y_balanced = self.balance_fraud_classes(X, y, sampling_strategy)
+        # Update y to match cleaned X
+        y_cleaned = y.loc[X_cleaned.index]
+        
+        # Apply SMOTE after cleaning
+        X_balanced, y_balanced = self.balance_fraud_classes(X_cleaned, y_cleaned, sampling_strategy)
         
         return X_balanced, y_balanced
 
@@ -244,7 +230,7 @@ class EthereumDataCleaner:
             'cleaned': cleaned_df[target_col].value_counts(normalize=True).to_dict()
         }
         
-        # 3. Outlier Analysis
+        # 3. Outlier Analysis using same threshold as cleaning
         def count_outliers(df: pd.DataFrame, col: str) -> int:
             q1 = df[col].quantile(0.25)
             q3 = df[col].quantile(0.75)
@@ -400,22 +386,31 @@ def main():
         'avg_transaction_received': 'mean',
         'total_sent': 'mean',
         'total_received': 'mean',
-        'contract_interaction': 'mean',
-        'contract_creation': 'mean'
+        'contract_interaction': 'most_frequent',  # Changed to most_frequent for binary
+        'contract_creation': 'most_frequent'      # Changed to most_frequent for binary
     }
     
-    # Features to exclude from outlier treatment
-    exclude_from_outliers = ['fraud_label', 'contract_creation']
+    # Features to exclude from outlier treatment (binary and count-based features)
+    exclude_from_outliers = [
+        'fraud_label',
+        'contract_creation',
+        'contract_interaction',
+        'transaction_count',
+        'unique_contacts_sent',
+        'unique_contacts_received',
+        'transaction_frequency_sent',
+        'transaction_frequency_received'
+    ]
     
     print("Cleaning Ethereum transaction data...")
-    # Apply cleaning pipeline
+    # Apply cleaning pipeline with improved parameters
     X_cleaned, y_cleaned = cleaner.clean_ethereum_data(
         df=eth_data,
         target_col='fraud_label',
         imputation_strategy=blockchain_cleaning_strategy,
         sampling_strategy=1.0,  # Equal distribution of fraud/non-fraud
-        outlier_method='winsor',  # Use winsorization for transaction amounts
-        outlier_threshold=3.0,
+        outlier_method='iqr',  # Use IQR-based removal
+        outlier_threshold=1.5,  # Standard IQR rule
         exclude_from_outlier=exclude_from_outliers
     )
     
