@@ -12,6 +12,10 @@ The script handles:
 - Data loading and saving operations
 - Feature standardization and mapping
 - Data quality validation and statistics calculation
+
+Output:
+- The processed dataset is saved as 'merged_dataset.csv' in the data/processed directory
+- This is the SINGLE SOURCE OF TRUTH for the standardized dataset used in all downstream analysis
 """
 
 import os
@@ -81,7 +85,7 @@ def main():
     3. Initializes the FeatureMapper for standardization
     4. Processes and validates the datasets
     5. Prints feature statistics for analysis
-    6. Saves the processed dataset to data/processed directory
+    6. Saves the processed dataset to data/processed/merged_dataset.csv
     
     The pipeline ensures:
     - Consistent feature naming across datasets
@@ -93,7 +97,7 @@ def main():
     base_dir = Path(__file__).parent.parent.parent
     transaction_path = base_dir / "data/raw/transaction_dataset.csv"
     features_path = base_dir / "data/raw/eth_illicit_features.csv"
-    output_path = base_dir / "data/processed/standardized_fraud_detection.csv"
+    output_path = base_dir / "data/processed/merged_dataset.csv"  # Updated output path
     
     # Load datasets
     print("Loading datasets...")
@@ -113,10 +117,21 @@ def main():
         for stat_name, stat_value in feature_stats.items():
             print(f"  {stat_name}: {stat_value}")
     
+    # Print dataset shapes for verification
+    print("\nDataset shapes:")
+    print(f"Transaction dataset: {transaction_df.shape}")
+    print(f"Features dataset: {features_df.shape}")
+    print(f"Final processed dataset: {processed_df.shape}")
+    
+    # Check for duplicates
+    duplicates = processed_df.duplicated().sum()
+    print(f"\nNumber of duplicate rows: {duplicates}")
+    
     # Save processed data
     save_processed_data(processed_df, str(output_path))
     
     print("\nProcessing complete!")
+    print(f"Standardized dataset saved to: {output_path}")
 
 if __name__ == "__main__":
     main() 
