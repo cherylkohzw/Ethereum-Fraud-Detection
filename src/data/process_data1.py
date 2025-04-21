@@ -19,6 +19,10 @@ Output:
 """
 
 import os
+import sys
+
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+
 import pandas as pd
 from pathlib import Path
 from features.feature_mapping import FeatureMapper
